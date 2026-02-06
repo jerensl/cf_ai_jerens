@@ -1,4 +1,9 @@
-import { routeAgentRequest, type Schedule } from "agents";
+import {
+  routeAgentRequest,
+  type Connection,
+  type Schedule,
+  type WSMessage
+} from "agents";
 
 import { getSchedulePrompt } from "agents/schedule";
 
@@ -13,12 +18,12 @@ import {
   createUIMessageStreamResponse,
   type ToolSet
 } from "ai";
-import { openai } from "@ai-sdk/openai";
+import { google } from "@ai-sdk/google";
 import { processToolCalls, cleanupMessages } from "./utils";
 import { tools, executions } from "./tools";
 // import { env } from "cloudflare:workers";
 
-const model = openai("gpt-4o-2024-11-20");
+const model = google("gemini-2.5-flash-lite");
 // Cloudflare AI Gateway
 // const openai = createOpenAI({
 //   apiKey: env.OPENAI_API_KEY,
@@ -29,6 +34,97 @@ const model = openai("gpt-4o-2024-11-20");
  * Chat Agent implementation that handles real-time AI chat interactions
  */
 export class Chat extends AIChatAgent<Env> {
+  async onStart(): Promise<void> {
+    this.sql`
+      CREATE TABLE IF NOT EXISTS events (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        action TEXT,
+        title TEXT NOT NULL,
+        description TEXT,
+        url TEXT,
+        actor TEXT,
+        payload TEXT,
+        timestamp TEXT NOT NULL
+      )
+    `;
+
+    this.sql`
+      CREATE INDEX IF NOT EXISTS idx_events_timestamp
+      ON events(timestamp DESC)
+    `;
+  }
+  async onRequest(request: Request): Promise<Response> {
+    // 1. Validate method
+    if (request.method !== "POST") {
+      return new Response("Method not allowed", { status: 405 });
+    }
+
+    // 2. Get event type from headers
+    const eventType = request.headers.get("X-Event-Type");
+
+    // 3. Verify signature
+    const signature = request.headers.get("X-Signature");
+    const body = await request.text();
+
+    if (!(await this.verifySignature(body, signature))) {
+      return new Response("Invalid signature", { status: 401 });
+    }
+
+    // 4. Parse and process
+    const payload = JSON.parse(body);
+    await this.handleEvent(eventType, payload);
+
+    // 5. Respond quickly
+    return new Response("OK", { status: 200 });
+  }
+
+  private async handleEvent(type: string, payload: unknown) {
+    // Check if already processed
+    const existing = [
+      ...this.sql`
+      SELECT id FROM events WHERE id = ${eventId}
+    `
+    ];
+
+    if (existing.length > 0) {
+      console.log(`Event ${eventId} already processed, skipping`);
+      return;
+    }
+
+    // Process and store
+    await this.processPayload(payload);
+    this.sql`INSERT INTO events (id, ...) VALUES (${eventId}, ...)`;
+  }
+  async onError(error: unknown) {
+    console.error(`Chat Agent Error:`, error);
+  }
+
+  async onClose(
+    connection: Connection,
+    code: number,
+    reason: string,
+    _wasClean: boolean
+  ) {
+    console.log(`Connection ${connection.id} closed: ${code} ${reason}`);
+
+    // Notify other clients
+    this.broadcast(
+      JSON.stringify({
+        event: "user-left",
+        userId: (connection.state as any)?.userId
+      })
+    );
+  }
+
+  async onMessage(connection: Connection, message: WSMessage) {
+    console.log("OnMessage:", message);
+    if (typeof message === "string") {
+      // Handle text message
+      const data = JSON.parse(message);
+      connection.send(JSON.stringify({ received: data }));
+    }
+  }
   /**
    * Handles incoming chat messages and manages the response stream
    */
@@ -114,14 +210,14 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/check-open-ai-key") {
-      const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
+      const hasOpenAIKey = !!process.env.GOOGLE_GENERATIVE_AI_API_KEY;
       return Response.json({
         success: hasOpenAIKey
       });
     }
-    if (!process.env.OPENAI_API_KEY) {
+    if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
       console.error(
-        "OPENAI_API_KEY is not set, don't forget to set it locally in .dev.vars, and use `wrangler secret bulk .dev.vars` to upload it to production"
+        "GOOGLE_GENERATIVE_AI_API_KEY is not set, don't forget to set it locally in .dev.vars, and use `wrangler secret bulk .dev.vars` to upload it to production"
       );
     }
     return (
