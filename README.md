@@ -30,7 +30,7 @@ npm install
 Create a `.dev.vars` file:
 
 ```env
-OPENAI_API_KEY=your_openai_api_key
+GOOGLE_GENERATIVE_AI_API_KEY=your_google_generative_ai_api_key
 ```
 
 4. Run locally:

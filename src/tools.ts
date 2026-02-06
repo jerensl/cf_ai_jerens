@@ -8,6 +8,7 @@ import { z } from "zod/v3";
 import type { Chat } from "./server";
 import { getCurrentAgent } from "agents";
 import { scheduleSchema } from "agents/schedule";
+import Firecrawl from "@mendable/firecrawl-js";
 
 /**
  * Local time tool that executes automatically
@@ -21,6 +22,15 @@ const getLocalTime = tool({
     console.log(`Getting local time for ${location}`);
     return "10am";
   }
+});
+
+const getFootballLeagueTableForClub = tool({
+  description: "get the league table position for a football club",
+  inputSchema: z.object({
+    league: z.string(),
+    club: z.string()
+  })
+  // Omitting execute function makes this tool require human confirmation
 });
 
 const scheduleTask = tool({
@@ -104,6 +114,7 @@ const cancelScheduledTask = tool({
  */
 export const tools = {
   getLocalTime,
+  getFootballLeagueTableForClub,
   scheduleTask,
   getScheduledTasks,
   cancelScheduledTask
@@ -114,4 +125,48 @@ export const tools = {
  * This object contains the actual logic for tools that need human approval
  * Each function here corresponds to a tool above that doesn't have an execute function
  */
-export const executions = {};
+export const executions = {
+  getFootballLeagueTableForClub: async ({
+    league,
+    _club
+  }: {
+    league: string;
+    club: string;
+  }) => {
+    const { agent } = getCurrentAgent<Chat>();
+    try {
+      const app = new Firecrawl({ apiKey: process.env.FIRECRAWL_API_KEY });
+
+      let url: string = "";
+
+      switch (league.toLowerCase()) {
+        case "premier league":
+          url = "https://www.premierleague.com/en/tables/premier-league";
+          break;
+      }
+
+      if (url === "") {
+        throw new Error("The league is not valid");
+      }
+
+      const schema = z.object({
+        position: z.string(),
+        team: z.boolean()
+      });
+
+      const page = await app.scrape(url, {
+        formats: [{ type: "json", schema: schema }],
+        maxAge: 3600000 // 1 hour in milliseconds
+      });
+
+      if (page.warning) {
+        throw new Error(`Issue with LLM: ${page.warning}`);
+      }
+
+      return page.json;
+    } catch (error) {
+      console.error('error from "getFootballLeagueTableForClub"', error);
+      return `error from "getFootballLeagueTableForClub": ${error}`;
+    }
+  }
+};
